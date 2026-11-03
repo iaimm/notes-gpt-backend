@@ -135,6 +135,16 @@ public class ChatController {
             }
             long readTotal = System.currentTimeMillis() - readStart;
             System.out.println("[PERF] READER REQUEST=" + readTotal + "ms");
+            ObjectNode refsPayload = mapper.createObjectNode();
+            ArrayNode refsArr = refsPayload.putArray("refs");
+            for (var h : hits) {
+                ObjectNode r = refsArr.addObject();
+                r.put("src", h.src());
+                r.put("text", h.text().substring(0, Math.min(200, h.text().length())));  // 截断防过长
+            }
+            emitter.send(SseEmitter.event()
+                    .name("refs")
+                    .data(mapper.writeValueAsString(refsPayload)));
             emitter.complete();                                // 流正常结束，关门
             long totalMs = System.currentTimeMillis() - totalStart;   // ===== 计时 3：总耗时 =====
             System.out.printf("[PERF] 检索=%dms | TTFT=%dms | 总耗时=%dms%n", searchMs, totalMs, totalMs);
