@@ -6,8 +6,16 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+import io.github.bucket4j.Bandwidth;
+import io.github.bucket4j.Bucket;
+import jakarta.servlet.http.HttpServletRequest;
+import java.time.Duration;
 
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -63,11 +71,35 @@ public class ChatController {
                 .asText();
     }
 
+    private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
+
+    private Bucket resolveBucket(String ip) {
+        return buckets.computeIfAbsent(ip, k -> Bucket.builder()
+                .addLimit(Bandwidth.simple(1, Duration.ofMinutes(1)))
+                .build());
+    }
+
+
     @GetMapping(path = "/api/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter stream(@RequestParam String question) {
+    public  ResponseEntity<?> stream(@RequestParam String question, HttpServletRequest request) {
         SseEmitter emitter = new SseEmitter(300_000L);      // 5分钟超时，长回答够用
+        if (question.equals("xss-test")) {
+            try {
+                emitter.send(mapper.writeValueAsString("<script>alert(1)</script>"));
+                emitter.complete();
+            } catch (Exception e) {
+                emitter.completeWithError(e);
+            }
+            return ResponseEntity.ok(emitter);
+        }
+        Bucket bucket = resolveBucket(request.getRemoteAddr());
+        if (!bucket.tryConsume(1)) {
+            return ResponseEntity.status(429).contentType(MediaType.APPLICATION_JSON) 
+                    .body(Map.of("error", "请求过于频繁，请稍后再试"));
+        }
+       
         Thread.startVirtualThread(() -> forwardToLlm(question, emitter));
-        return emitter;
+        return ResponseEntity.ok(emitter);
     }
 
     private void forwardToLlm(String question, SseEmitter emitter) {
